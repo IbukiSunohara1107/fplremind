@@ -465,6 +465,17 @@
     </div>
     <button id="enable-btn" disabled>Enable Reminders</button>
     <button id="test-btn" disabled>Send a Test Notification</button>
+
+    <!-- Notification diagnostics -->
+    <div id="notification-debug" style="margin-top:14px;padding:12px;border:1px solid rgba(255,255,255,.15);border-radius:10px;font-size:12px;line-height:1.6;background:rgba(0,0,0,.12);">
+      <div style="font-weight:700;margin-bottom:6px;">Notification Diagnostics</div>
+      <div>Notification API: <strong id="debug-api">checking…</strong></div>
+      <div>Permission: <strong id="debug-permission">checking…</strong></div>
+      <div>Service Worker: <strong id="debug-sw">checking…</strong></div>
+      <div>SW Registration: <strong id="debug-sw-registration">checking…</strong></div>
+      <div>Last Test: <strong id="debug-last-test">—</strong></div>
+      <button id="refresh-debug-btn" type="button" style="margin-top:8px;">Refresh Status</button>
+    </div>
   </div>
 
   <!-- Platform tip -->
@@ -572,14 +583,13 @@ let isInStandaloneMode = false;
   await registerServiceWorker();
   await loadDeadlines();
   updateNotificationUI();
-  function showNotificationPermissionDebug() {
-  const permission = Notification.permission;
-
-  console.log('[DEBUG] Notification.permission =', permission);
-
-  alert(`Notification permission: ${permission}`);
-}
 })();
+
+// Keep diagnostics in sync after initial Service Worker registration.
+setTimeout(() => {
+  updateNotificationDebug();
+  updateNotificationUI();
+}, 500);
 
 // ─── Platform detection ───────────────────────────────────────────────────────
 function detectPlatform() {
@@ -767,68 +777,118 @@ function startCountdown(deadlineUTC) {
   countdownTimer = setInterval(tick, 1000);
 }
 
-// ─── Notification UI ──────────────────────────────────────────────────────────
+// ─── Notification UI + diagnostics ────────────────────────────────────────────
+function updateNotificationDebug() {
+  const apiEl = document.getElementById('debug-api');
+  const permissionEl = document.getElementById('debug-permission');
+  const swEl = document.getElementById('debug-sw');
+  const registrationEl = document.getElementById('debug-sw-registration');
+
+  const apiSupported = 'Notification' in window;
+  if (apiEl) apiEl.textContent = apiSupported ? 'SUPPORTED' : 'NOT SUPPORTED';
+  if (permissionEl) permissionEl.textContent = apiSupported ? Notification.permission : 'N/A';
+  if (swEl) swEl.textContent = 'serviceWorker' in navigator ? 'SUPPORTED' : 'NOT SUPPORTED';
+
+  if (registrationEl) {
+    if (!('serviceWorker' in navigator)) {
+      registrationEl.textContent = 'N/A';
+    } else if (swRegistration) {
+      const active = swRegistration.active ? 'active' : 'not active';
+      registrationEl.textContent = active + ' — scope: ' + swRegistration.scope;
+    } else {
+      registrationEl.textContent = 'not ready';
+    }
+  }
+}
+
+function setLastTestStatus(message) {
+  const el = document.getElementById('debug-last-test');
+  if (el) el.textContent = message;
+}
+
 function updateNotificationUI() {
   if (!('Notification' in window)) {
-    setStatus('red', 'Notifications not supported in this browser.');
+    setStatus('red', 'Notifications are not supported in this browser.');
+    updateNotificationDebug();
     return;
   }
 
-  const perm   = Notification.permission;
-  const btn    = document.getElementById('enable-btn');
+  const perm = Notification.permission;
+  const btn = document.getElementById('enable-btn');
   const testBtn = document.getElementById('test-btn');
-  const dot    = document.getElementById('status-dot');
-  const text   = document.getElementById('notif-text');
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('notif-text');
 
   if (perm === 'granted') {
     dot.className = 'status-dot green';
     text.textContent = 'Reminders enabled — you\'ll be notified 3–8 hours before each deadline.';
-    btn.textContent  = 'Reminders Enabled';
-    btn.className    = 'granted';
-    btn.disabled     = true;
+    btn.textContent = 'Reminders Enabled';
+    btn.className = 'granted';
+    btn.disabled = true;
     testBtn.disabled = false;
     registerPeriodicSync();
   } else if (perm === 'denied') {
     dot.className = 'status-dot red';
-    text.textContent = 'Notifications blocked. Enable them in your phone\'s Settings > Safari/Chrome > Notifications.';
+    text.textContent = 'Notifications are blocked at the browser/site level. Check this site\'s notification permission in Settings.';
     btn.textContent = 'Notifications Blocked';
     btn.disabled = true;
+    testBtn.disabled = true;
   } else {
     dot.className = 'status-dot yellow';
     text.textContent = 'Tap the button below to enable reminder notifications.';
     btn.textContent = 'Enable Reminders';
     btn.disabled = false;
+    testBtn.disabled = true;
   }
+
+  updateNotificationDebug();
 }
 
 function setStatus(color, msg) {
   document.getElementById('status-dot').className = `status-dot ${color}`;
   document.getElementById('notif-text').textContent = msg;
+  updateNotificationDebug();
 }
 
 // ─── Enable button ────────────────────────────────────────────────────────────
 document.getElementById('enable-btn').addEventListener('click', async () => {
   if (!('Notification' in window)) return;
 
-  const btn  = document.getElementById('enable-btn');
+  const btn = document.getElementById('enable-btn');
   btn.textContent = 'Requesting permission…';
-  btn.disabled    = true;
+  btn.disabled = true;
 
-  const result = await Notification.requestPermission();
+  try {
+    const result = await Notification.requestPermission();
+    console.log('[DEBUG] Notification.requestPermission() =>', result);
+    setLastTestStatus('Permission request returned: ' + result);
 
-  if (result === 'granted') {
-    await registerPeriodicSync();
-    showToast('Reminders enabled!');
-    // Show an immediate welcome notification
-    if (swRegistration) {
-      swRegistration.showNotification('FPL Reminders Active!', {
-        body: 'You\'ll get a notification 3–8 hours before each deadline, any time of day.',
-        icon: './icon-192.png',
-        tag:  'fpl-welcome',
-      });
+    if (result === 'granted') {
+      await registerPeriodicSync();
+      showToast('Reminders enabled!');
+
+      if (swRegistration && swRegistration.active) {
+        try {
+          await swRegistration.showNotification('FPL Reminders Active!', {
+            body: 'You\'ll get a notification 3–8 hours before each deadline, any time of day.',
+            icon: './icon-192.png',
+            tag: 'fpl-welcome',
+          });
+          setLastTestStatus('Welcome notification sent via Service Worker.');
+        } catch (e) {
+          console.error('[DEBUG] Welcome notification failed:', e);
+          setLastTestStatus('Welcome notification FAILED: ' + (e.message || e));
+        }
+      } else {
+        setLastTestStatus('Permission granted, but Service Worker is not active yet.');
+      }
+    } else {
+      showToast('Permission was not granted.');
     }
-  } else {
-    showToast('Permission denied. Check browser settings.');
+  } catch (e) {
+    console.error('[DEBUG] Permission request failed:', e);
+    setLastTestStatus('Permission request ERROR: ' + (e.message || e));
+    showToast('Could not request notification permission.');
   }
 
   updateNotificationUI();
@@ -836,27 +896,79 @@ document.getElementById('enable-btn').addEventListener('click', async () => {
 
 // ─── Test notification button ─────────────────────────────────────────────────
 document.getElementById('test-btn').addEventListener('click', async () => {
+  updateNotificationDebug();
+
+  if (!('Notification' in window)) {
+    setLastTestStatus('TEST FAILED: Notification API is not supported.');
+    showToast('Notifications are not supported in this browser.');
+    return;
+  }
+
+  const permission = Notification.permission;
+  console.log('[DEBUG] Test: Notification.permission =', permission);
+
+  if (permission !== 'granted') {
+    setLastTestStatus('TEST BLOCKED: permission = ' + permission);
+    showToast('Permission is ' + permission + '. Check site notification settings.');
+    updateNotificationDebug();
+    return;
+  }
+
   if (!swRegistration) {
+    setLastTestStatus('TEST FAILED: Service Worker registration is missing.');
     showToast('Service worker not ready. Reload and try again.');
+    updateNotificationDebug();
     return;
   }
 
-  if (Notification.permission !== 'granted') {
-    showToast('Enable reminders first.');
+  if (!swRegistration.active) {
+    setLastTestStatus('TEST FAILED: Service Worker registration exists but is not active.');
+    showToast('Service worker is not active. Reload and try again.');
+    updateNotificationDebug();
     return;
   }
 
-  // Fire notification directly from page — works immediately, no SW needed
   const body = nextEvent
-    ? `${nextEvent.name} deadline: ${formatTime(toJST(new Date(nextEvent.deadline_time)))} JST — don't forget to update your team!`
+    ? `${nextEvent.name} deadline: ${formatTime(toJST(new Date(nextEvent.deadline_time)))} JST — don\'t forget to update your team!`
     : 'FPL Reminder is active! You will be notified before each deadline.';
 
   try {
-    new Notification('FPL Reminder — Test', { body, icon: './icon-192.png', tag: 'fpl-test' });
-    showToast('Test notification sent — check your tray!');
+    // Use the same Service Worker notification mechanism as the real reminders.
+    await swRegistration.showNotification('FPL Reminder — Test', {
+      body,
+      icon: './icon-192.png',
+      badge: './icon-192.png',
+      tag: 'fpl-test',
+      requireInteraction: true,
+      data: { url: 'https://fantasy.premierleague.com/transfers' },
+    });
+
+    setLastTestStatus('SUCCESS: Service Worker showNotification() completed.');
+    showToast('Test notification sent — check your notifications!');
+    console.log('[DEBUG] Service Worker test notification sent.');
   } catch (e) {
-    showToast('Could not send notification. Check notification permissions in Settings.');
+    console.error('[DEBUG] Service Worker test notification failed:', e);
+    const message = e && e.message ? e.message : String(e);
+    setLastTestStatus('FAILED: ' + message);
+    showToast('Test notification FAILED: ' + message);
   }
+
+  updateNotificationDebug();
+});
+
+// ─── Refresh debug status ─────────────────────────────────────────────────────
+document.getElementById('refresh-debug-btn').addEventListener('click', async () => {
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) swRegistration = reg;
+    } catch (e) {
+      console.warn('[DEBUG] Could not refresh Service Worker registration:', e);
+    }
+  }
+
+  updateNotificationUI();
+  showToast('Notification status refreshed.');
 });
 
 // ─── Periodic Background Sync ─────────────────────────────────────────────────
