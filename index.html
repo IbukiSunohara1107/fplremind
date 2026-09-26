@@ -572,6 +572,13 @@ let isInStandaloneMode = false;
   await registerServiceWorker();
   await loadDeadlines();
   updateNotificationUI();
+  function showNotificationPermissionDebug() {
+  const permission = Notification.permission;
+
+  console.log('[DEBUG] Notification.permission =', permission);
+
+  alert(`Notification permission: ${permission}`);
+}
 })();
 
 // ─── Platform detection ───────────────────────────────────────────────────────
